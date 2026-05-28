@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        android:minSdkVersion="31" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"
+        android:minSdkVersion="31" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="Brose Adapter for Locus"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <service
+            android:name=".BroseAdapterService"
+            android:exported="true"
+            android:label="Brose Motor Adapter"
+            android:permission="com.asamm.locus.permission.SENSOR_ADAPTER">
+            <intent-filter>
+                <action android:name="locus.api.android.ACTION_SENSOR_ADAPTER_PARSER" />
+            </intent-filter>
+            <meta-data
+                android:name="locus.api.android.SENSOR_ADAPTER"
+                android:resource="@xml/locus_adapter" />
+        </service>
+
+    </application>
+</manifest>
