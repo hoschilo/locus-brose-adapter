@@ -1,0 +1,18 @@
+# Build outputs
+build/
+app/build/
+
+# Gradle
+.gradle/
+gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+
+# Local config (contains SDK path, never commit)
+local.properties
+
+# Signing keys (never commit!)
+*.jks
+*.keystore

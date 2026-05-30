@@ -5,6 +5,7 @@ import android.util.Log
 import locus.api.android.features.sensorAdapter.AdapterApi
 import locus.api.android.features.sensorAdapter.LocusBindContext
 import locus.api.android.features.sensorAdapter.LocusVariable
+import locus.api.android.features.sensorAdapter.parser.AdapterWrite
 import locus.api.android.features.sensorAdapter.parser.LocusParserAdapterService
 import locus.api.android.features.sensorAdapter.parser.SensorValueBatch
 import locus.api.android.features.sensorAdapter.parser.SensorValueBatchBuilder
@@ -45,25 +46,25 @@ class BroseAdapterService : LocusParserAdapterService() {
         currentData[deviceId] = BikeData()
 
         // Send initial live-data-request immediately to start SEC stream
-        sendLiveDataRequest(deviceId, bindContext)
+        sendLiveDataRequest(deviceId)
 
-        // Repeat every 2 seconds (Brose only sends SEC on request)
+        // 500ms first shot (retry if motor wasn't ready at t=0), then every 1500ms
         val timer = Timer("livedata-$deviceId", true)
         timer.scheduleAtFixedRate(object : TimerTask() {
-            override fun run() { sendLiveDataRequest(deviceId, bindContext) }
-        }, 2000L, 2000L)
+            override fun run() { sendLiveDataRequest(deviceId) }
+        }, 500L, 1500L)
         liveDataTimers[deviceId] = timer
 
         return AdapterApi.INIT_OK
     }
 
-    private fun sendLiveDataRequest(deviceId: String, bindContext: LocusBindContext) {
-        // TODO: verify exact writeData() signature from LocusBindContext once API is published
-        // bindContext.writeData(deviceId, CHAR_COMMAND, BroseProtocol.LIVE_DATA_REQUEST)
+    private fun sendLiveDataRequest(deviceId: String) {
+        writeData(deviceId, listOf(AdapterWrite(CHAR_COMMAND, BroseProtocol.LIVE_DATA_REQUEST)))
         Log.d(TAG, "sendLiveDataRequest: $deviceId")
     }
 
     override fun parseData(deviceId: String, source: String, bytes: ByteArray): SensorValueBatch? {
+        DiagnosticStore.writeSource(this, source)
         return when {
             source.equals(CHAR_TELEMETRY, ignoreCase = true) -> parseTel(deviceId, bytes)
             source.equals(CHAR_SECONDARY, ignoreCase = true) -> parseSec(deviceId, bytes)
@@ -72,13 +73,16 @@ class BroseAdapterService : LocusParserAdapterService() {
     }
 
     private fun parseTel(deviceId: String, raw: ByteArray): SensorValueBatch? {
+        Log.d(TAG, "TEL raw (${raw.size}b): ${raw.toHex()}")
         if (raw.size < 13) return null
         val data = currentData[deviceId] ?: BikeData()
         val updated = BroseProtocol.parseMessage(raw, data)
         currentData[deviceId] = updated
+        Log.d(TAG, "TEL parsed: speed=${updated.speed} cadence=${updated.cadence} batt=${updated.batteryPercent} assist=${updated.assistMode}")
+        DiagnosticStore.writeTel(this, raw.toHex(), updated.speed, updated.cadence, updated.batteryPercent, updated.assistMode)
 
         return SensorValueBatchBuilder(System.currentTimeMillis())
-            .put(LocusVariable.Speed, updated.speed / 3.6f)           // km/h → m/s
+            .put(LocusVariable.Speed, updated.speed / 3.6f)
             .put(LocusVariable.Cadence, updated.cadence)
             .put(LocusVariable.BicycleBattery, updated.batteryPercent)
             .put(LocusVariable.AssistMode, assistModeLabel(updated.assistMode))
@@ -86,6 +90,7 @@ class BroseAdapterService : LocusParserAdapterService() {
     }
 
     private fun parseSec(deviceId: String, raw: ByteArray): SensorValueBatch? {
+        Log.d(TAG, "SEC raw (${raw.size}b): ${raw.toHex()}")
         if (raw.size < 2) return null
         val seq = raw[0].toInt() and 0xFF
         val payload = raw.copyOfRange(1, raw.size)
@@ -98,18 +103,32 @@ class BroseAdapterService : LocusParserAdapterService() {
         } else {
             packets[seq] = payload
         }
+        Log.d(TAG, "SEC seq=0x${seq.toString(16)} packets=${packets.size}")
         if (seq != 0x83) return null  // not yet complete
 
-        val combined = buildCombined(packets)
-        val motorPower = BroseProtocol.extractPowerFromProtobuf(combined)
-        val estRange   = BroseProtocol.extractEstimatedRange(combined)
-        val batt       = BroseProtocol.extractBatteryFromProtobuf(combined)
+        val combined    = buildCombined(packets)
+        Log.d(TAG, "SEC combined (${combined.size}b): ${combined.toHex()}")
+        val motorPower  = BroseProtocol.extractPowerFromProtobuf(combined)
+        val riderPower  = BroseProtocol.extractRiderPower(combined)
+        val estRange    = BroseProtocol.extractEstimatedRange(combined)
+        val batt        = BroseProtocol.extractBatteryFromProtobuf(combined)
+        Log.d(TAG, "SEC parsed: motorPower=$motorPower riderPower=$riderPower estRange=$estRange batt=$batt")
+        DiagnosticStore.writeSec(this, combined.toHex(), motorPower, estRange, batt)
 
-        val isMoving = (currentData[deviceId]?.speed ?: 0f) > 0.5f
+        val last     = currentData[deviceId] ?: BikeData()
+        val isMoving = last.speed > 0.5f
         val builder  = SensorValueBatchBuilder(System.currentTimeMillis())
-        if (motorPower >= 0 && isMoving) builder.put(LocusVariable.Power, motorPower)
-        if (batt >= 0)                   builder.put(LocusVariable.BicycleBattery, batt)
-        if (estRange >= 0)               builder.put(LocusVariable.Range, estRange * 1000f) // km → m
+
+        // Piggyback last known TEL state — keeps Locus updated when TEL is silent (OFF mode)
+        builder.put(LocusVariable.Speed, last.speed / 3.6f)
+        builder.put(LocusVariable.Cadence, last.cadence)
+        builder.put(LocusVariable.AssistMode, assistModeLabel(last.assistMode))
+
+        if (batt >= 0)   builder.put(LocusVariable.BicycleBattery, batt)
+        if (estRange >= 0) builder.put(LocusVariable.Range, estRange * 1000f) // km → m
+
+        builder.put(LocusVariable.Power, riderPower.coerceAtLeast(0))
+
         return builder.build()
     }
 
@@ -124,11 +143,12 @@ class BroseAdapterService : LocusParserAdapterService() {
     }
 
     private fun assistModeLabel(mode: String) = when (mode) {
+        "OFF"   -> "OFF"
         "ECO"   -> "ECO"
         "TOUR"  -> "TOUR"
         "SPORT" -> "SPORT"
         "BOOST" -> "BOOST"
-        else    -> "ECO"  // OFF / not connected → ECO (0 is invalid for Locus)
+        else    -> mode
     }
 
     private fun buildCombined(packets: Map<Int, ByteArray>): ByteArray {
@@ -146,3 +166,6 @@ class BroseAdapterService : LocusParserAdapterService() {
         private const val CHAR_COMMAND   = "31be3634-d927-11e9-8a34-2a2ae2dbcce4"
     }
 }
+
+private fun ByteArray.toHex(): String =
+    joinToString(" ") { "%02X".format(it) }

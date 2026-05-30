@@ -9,12 +9,12 @@
 <adapter
     apiVersion="1"
     id="com.ebikelocus.broseadapter/BroseAdapter"
-    displayName="Brose E-Bike">
+    displayName="@string/adapter_name">
 
     <deviceType
         id="brose-motor"
         connectionType="BT4"
-        displayName="Brose Motor">
+        displayName="@string/device_type_name">
 
         <refId variable="SENSOR_SPEED" />
         <refId variable="SENSOR_CADENCE" />

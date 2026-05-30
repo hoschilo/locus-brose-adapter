@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Brose Adapter for Locus</string>
+    <string name="adapter_name">Brose E-Bike</string>
+    <string name="device_type_name">Brose Motor</string>
+    <string name="service_label">Brose Motor Adapter</string>
+    <string name="info_title">Brose Adapter for Locus Maps</string>
+    <string name="info_body">This app connects Locus Maps to your Brose e-bike motor via BLE.\n\nTo pair:\n1. Open Locus Maps\n2. Go to Settings → Sensors → Add sensor\n3. Select \"Brose Motor\" and choose your motor from the list\n\nThis app runs in the background — you do not need to open it again.</string>
+</resources>
