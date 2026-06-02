@@ -1,6 +1,13 @@
 package com.ebikelocus.broseadapter
 
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothManager
+import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import locus.api.android.features.sensorAdapter.AdapterApi
 import locus.api.android.features.sensorAdapter.LocusBindContext
@@ -42,6 +49,8 @@ class BroseAdapterService : LocusParserAdapterService() {
 
     override fun init(deviceId: String, deviceTypeId: String, bindContext: LocusBindContext): Int {
         Log.d(TAG, "init: deviceId=$deviceId type=$deviceTypeId")
+        // Cancel any existing timer for this deviceId — handles reconnect without prior shutdown()
+        liveDataTimers[deviceId]?.cancel()
         secPackets[deviceId] = mutableMapOf()
         currentData[deviceId] = BikeData()
 
@@ -140,6 +149,39 @@ class BroseAdapterService : LocusParserAdapterService() {
         secPackets.remove(deviceId)
         currentData.remove(deviceId)
         Log.d(TAG, "shutdown: $deviceId")
+        closeStaleGatt(deviceId)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        liveDataTimers.values.forEach { it.cancel() }
+        liveDataTimers.clear()
+        Log.d(TAG, "onDestroy: all timers cancelled")
+    }
+
+    // Android BLE GATT connections can linger after ungraceful disconnect (e.g. motor turned off
+    // out of range). Connecting + immediately closing forces the stack to clean up the stale state,
+    // avoiding the "device not found" symptom that requires a BT toggle to fix.
+    private fun closeStaleGatt(deviceId: String) {
+        if (!BluetoothAdapter.checkBluetoothAddress(deviceId)) return
+        try {
+            val btAdapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
+                ?.adapter ?: return
+            val device = btAdapter.getRemoteDevice(deviceId)
+            val gatt = device.connectGatt(this, false, object : BluetoothGattCallback() {
+                override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                    gatt.disconnect()
+                    gatt.close()
+                    Log.d(TAG, "closeStaleGatt: GATT closed for $deviceId (state=$newState)")
+                }
+            })
+            // Fallback: close regardless after 600ms in case callback never fires
+            Handler(Looper.getMainLooper()).postDelayed({
+                try { gatt.disconnect(); gatt.close() } catch (_: Exception) {}
+            }, 600L)
+        } catch (e: Exception) {
+            Log.w(TAG, "closeStaleGatt failed: $e")
+        }
     }
 
     private fun assistModeLabel(mode: String) = when (mode) {
