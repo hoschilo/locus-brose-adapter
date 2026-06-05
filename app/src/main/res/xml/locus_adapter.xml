@@ -1,11 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-    Brose Motor BLE Service UUID: 31be2300-d927-11e9-8a34-2a2ae2dbcce4
-    Locus scans for devices advertising this service.
-
-    TODO: Verify whether a serviceUuid attribute is supported in <deviceType>
-    for custom (non-BT-SIG) UUIDs — needed so Locus can scan without a name filter.
--->
 <adapter
     apiVersion="1"
     id="com.ebikelocus.broseadapter/BroseAdapter"
@@ -14,6 +7,7 @@
     <deviceType
         id="brose-motor"
         connectionType="BT4"
+        scanServiceUuid="31be2300-d927-11e9-8a34-2a2ae2dbcce4"
         displayName="@string/device_type_name">
 
         <refId variable="SENSOR_SPEED" />
