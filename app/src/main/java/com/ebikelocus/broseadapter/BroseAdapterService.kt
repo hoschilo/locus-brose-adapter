@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import locus.api.android.ActionBasics
 import locus.api.android.features.sensorAdapter.AdapterApi
 import locus.api.android.features.sensorAdapter.LocusBindContext
 import locus.api.android.features.sensorAdapter.LocusVariable
@@ -16,6 +17,7 @@ import locus.api.android.features.sensorAdapter.parser.AdapterWrite
 import locus.api.android.features.sensorAdapter.parser.LocusParserAdapterService
 import locus.api.android.features.sensorAdapter.parser.SensorValueBatch
 import locus.api.android.features.sensorAdapter.parser.SensorValueBatchBuilder
+import locus.api.android.utils.LocusUtils
 import java.util.Timer
 import java.util.TimerTask
 
@@ -47,21 +49,57 @@ class BroseAdapterService : LocusParserAdapterService() {
     // Per-deviceId timer for periodic live-data-request (every 2s)
     private val liveDataTimers = mutableMapOf<String, Timer>()
 
+    // null = not yet sampled (avoids spurious reset on service start while recording already active)
+    private var lastRecordingState: Boolean? = null
+    private var recordingCheckTimer: Timer? = null
+    @Volatile private var locusPackageName: String? = null
+
     override fun init(deviceId: String, deviceTypeId: String, bindContext: LocusBindContext): Int {
-        Log.d(TAG, "init: deviceId=$deviceId type=$deviceTypeId")
+        locusPackageName = bindContext.locusPackageName
+        Log.d(TAG, "init: deviceId=$deviceId type=$deviceTypeId locusPackage=${bindContext.locusPackageName}")
         // Cancel any existing timer for this deviceId — handles reconnect without prior shutdown()
         liveDataTimers[deviceId]?.cancel()
         secPackets[deviceId] = mutableMapOf()
         currentData[deviceId] = BikeData()
 
-        // Send initial live-data-request immediately to start SEC stream
-        sendLiveDataRequest(deviceId)
+        // Check if recording already active — schedule reset via timer so it runs after the
+        // BLE stack is settled, with no live-data competing in the write queue.
+        var needsReset = false
+        if (lastRecordingState == null) {
+            try {
+                val lv = LocusUtils.createLocusVersion(this, bindContext.locusPackageName)
+                val container = lv?.let { ActionBasics.getUpdateContainer(this, it) }
+                val isRecording = container?.isTrackRecRecording ?: false
+                lastRecordingState = isRecording
+                if (isRecording) {
+                    Log.d(TAG, "init: recording active — will reset trip distance in 1s for $deviceId")
+                    needsReset = true
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "init: failed to check recording state: $e")
+                lastRecordingState = false
+            }
+        }
 
-        // 500ms first shot (retry if motor wasn't ready at t=0), then every 1500ms
         val timer = Timer("livedata-$deviceId", true)
-        timer.scheduleAtFixedRate(object : TimerTask() {
-            override fun run() { sendLiveDataRequest(deviceId) }
-        }, 500L, 1500L)
+        if (needsReset) {
+            // Send reset at 1s (BLE settled, no prior CMD writes competing)
+            // Resume live-data only at 3s (gives motor 2s to process reset)
+            timer.schedule(object : TimerTask() {
+                override fun run() {
+                    Log.d(TAG, "init: sending trip reset for $deviceId")
+                    writeData(deviceId, listOf(AdapterWrite(CHAR_COMMAND, BroseProtocol.RESET_TRIP_DISTANCE)))
+                }
+            }, 1000L)
+            timer.scheduleAtFixedRate(object : TimerTask() {
+                override fun run() { sendLiveDataRequest(deviceId) }
+            }, 3000L, 1500L)
+        } else {
+            sendLiveDataRequest(deviceId)
+            timer.scheduleAtFixedRate(object : TimerTask() {
+                override fun run() { sendLiveDataRequest(deviceId) }
+            }, 500L, 1500L)
+        }
         liveDataTimers[deviceId] = timer
 
         return AdapterApi.INIT_OK
@@ -141,6 +179,51 @@ class BroseAdapterService : LocusParserAdapterService() {
         return builder.build()
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        recordingCheckTimer = Timer("recordingCheck", true).also {
+            it.scheduleAtFixedRate(object : TimerTask() {
+                override fun run() { checkRecordingState() }
+            }, 2000L, 2000L)
+        }
+    }
+
+    private fun checkRecordingState() {
+        try {
+            val pkg = locusPackageName ?: run {
+                Log.d(TAG, "checkRecording: no locusPackageName yet")
+                return
+            }
+            val lv = LocusUtils.createLocusVersion(this, pkg) ?: run {
+                Log.w(TAG, "checkRecording: createLocusVersion returned null for $pkg")
+                return
+            }
+            val container = ActionBasics.getUpdateContainer(this, lv) ?: run {
+                Log.w(TAG, "checkRecording: getUpdateContainer returned null")
+                return
+            }
+            val isRecording = container.isTrackRecRecording
+            val prev = lastRecordingState
+            lastRecordingState = isRecording
+            Log.d(TAG, "checkRecording: isRecording=$isRecording prev=$prev")
+            if (prev == false && isRecording) {
+                Log.d(TAG, "Tour started — resetting trip distance on ${currentData.keys}")
+                currentData.keys.forEach { deviceId ->
+                    // Pause live-data stream so motor is idle when reset arrives
+                    liveDataTimers[deviceId]?.cancel()
+                    writeData(deviceId, listOf(AdapterWrite(CHAR_COMMAND, BroseProtocol.RESET_TRIP_DISTANCE)))
+                    val timer = Timer("livedata-$deviceId", true)
+                    timer.scheduleAtFixedRate(object : TimerTask() {
+                        override fun run() { sendLiveDataRequest(deviceId) }
+                    }, 800L, 1500L)
+                    liveDataTimers[deviceId] = timer
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "checkRecording: exception $e")
+        }
+    }
+
     override fun getIntentForSettings(deviceId: String): Intent? = null
 
     override fun shutdown(deviceId: String) {
@@ -154,6 +237,8 @@ class BroseAdapterService : LocusParserAdapterService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        recordingCheckTimer?.cancel()
+        recordingCheckTimer = null
         liveDataTimers.values.forEach { it.cancel() }
         liveDataTimers.clear()
         Log.d(TAG, "onDestroy: all timers cancelled")
