@@ -50,6 +50,8 @@ class InfoActivity : Activity() {
 
     private var diagExpanded = false
     private var isSeekBarTracking = false
+    private var seekBarLocked = false
+    private val seekBarUnlock = Runnable { seekBarLocked = false }
 
     private val handler = Handler(Looper.getMainLooper())
     private val refreshRunnable = object : Runnable {
@@ -120,6 +122,9 @@ class InfoActivity : Activity() {
             override fun onStartTrackingTouch(bar: SeekBar) { isSeekBarTracking = true }
             override fun onStopTrackingTouch(bar: SeekBar) {
                 isSeekBarTracking = false
+                seekBarLocked = true
+                handler.removeCallbacks(seekBarUnlock)
+                handler.postDelayed(seekBarUnlock, 4000) // hold for 4s after command
                 sendCmd(BroseProtocol.buildCurrentScalingCmd(bar.progress))
             }
         })
@@ -167,7 +172,7 @@ class InfoActivity : Activity() {
 
         updateAssistButtons(snap.assistMode)
 
-        if (!isSeekBarTracking && snap.currentScaling in 0..100) {
+        if (!isSeekBarTracking && !seekBarLocked && snap.currentScaling in 0..100) {
             seekScaling.progress = snap.currentScaling
             tvScalingLabel.text  = "Current Scaling: ${snap.currentScaling}%"
         }
