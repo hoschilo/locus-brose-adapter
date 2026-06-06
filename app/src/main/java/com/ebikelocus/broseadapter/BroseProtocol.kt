@@ -80,7 +80,9 @@ object BroseProtocol {
             // DriveUnitData
             val riderPower  = f1?.let { getVarintField(it, 4).takeIf { v -> v > 0 }?.toInt()?.coerceIn(0, 1000) } ?: -1
             val rangeKm     = f1?.let { getVarintField(it, 10).takeIf { v -> v > 0 }?.toInt() } ?: -1
-            val motorTemp   = f1?.let { getVarintField(it, 8).takeIf { v -> v in 0..200 }?.toInt() } ?: Int.MIN_VALUE
+            // motor_temperature is sint32 (zigzag encoded): raw 40 → (40>>1)^0 = 20°C
+            val motorTempRaw = f1?.let { getVarintField(it, 8) } ?: -1L
+            val motorTemp    = if (motorTempRaw >= 0) zigzag(motorTempRaw).let { if (it in -40..200) it else Int.MIN_VALUE } else Int.MIN_VALUE
             val pedalTorque = f1?.let { getVarintField(it, 5).takeIf { v -> v > 0 }?.toInt() } ?: -1
             val lightOn     = f1?.let { getVarintField(it, 7) == 1L } ?: false
 
@@ -109,6 +111,8 @@ object BroseProtocol {
             )
         } catch (e: Exception) { SecValues() }
     }
+
+    private fun zigzag(n: Long): Int = ((n ushr 1) xor -(n and 1)).toInt()
 
     // ── Protobuf helpers ──────────────────────────────────────────────────────
 
